@@ -1,0 +1,21 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/firstfood
+    username: firstfood
+    password: firstfood
+  data:
+    redis:
+      host: redis
+      port: 6379
+
+logging:
+  level:
+    com.firstfood: DEBUG
+
+app:
+  jwt:
+    # Local-only throwaway value - overrides the required app.jwt.secret
+    # in application.yml so `docker compose up` / native local runs work
+    # without manually exporting JWT_SECRET. Never used outside local
+    # profile; production still fails fast if JWT_SECRET is unset.
+    secret: local-development-only-secret-do-not-use-in-production
