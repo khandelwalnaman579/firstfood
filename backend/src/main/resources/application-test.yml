@@ -1,0 +1,24 @@
+# Used with Testcontainers-managed Postgres/Redis. Datasource URL is
+# normally overridden at runtime by @DynamicPropertySource in tests; the
+# values below are fallbacks for running the app manually against a local
+# throwaway database.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/firstfood_test
+    username: firstfood
+    password: firstfood
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+logging:
+  level:
+    com.firstfood: DEBUG
+
+app:
+  jwt:
+    secret: test-only-secret-do-not-use-in-production

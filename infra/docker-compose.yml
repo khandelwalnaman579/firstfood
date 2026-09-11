@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: firstfood
+      POSTGRES_USER: firstfood
+      POSTGRES_PASSWORD: firstfood
+    ports:
+      - "5432:5432"
+    volumes:
+      - firstfood_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firstfood"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Valkey (BSD-licensed, Linux Foundation-maintained Redis fork) for local
+  # dev - wire-compatible with the Spring Data Redis / ioredis clients.
+  # Production still targets Upstash Redis per architecture.md's frozen
+  # tech stack; this substitution is local-only.
+  redis:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../backend
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ../frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  firstfood_postgres_data:
