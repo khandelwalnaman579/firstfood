@@ -18,7 +18,7 @@ source.
 First real pilot: **one mess, ~40–50 customers**, currently run on
 WhatsApp group + notebook. Pilot plan is **DAY-based, 30 days, ₹2,500**.
 
-Product vision: *"Food whenever you need it."*
+Product vision: *"Provide Food whenever you need it."*
 
 ---
 
@@ -163,6 +163,38 @@ menu-locking assumptions, AI features without validated demand.
   If a future module needs `TestRestTemplate` specifically for some
   reason, the same two dependencies plus `@AutoConfigureTestRestTemplate`
   are what's needed instead.
+- **Two more Spring Boot 4/Security 7 API surprises (fixed, Phase 2)** -
+  (1) `UsernamePasswordAuthenticationFilter` lives in
+  `org.springframework.security.web.authentication`, not
+  `org.springframework.security.authentication` - easy typo, breaks
+  `addFilterBefore(...)` with a confusing cascade of unrelated-looking
+  errors in the same file. (2) `RestTestClient`'s request-body method is
+  `.body(Object)`, not WebTestClient's `.bodyValue(Object)` - they look
+  like the same fluent API family but aren't quite. If either of these
+  reappears in a new module, it's the same two mistakes, not a new bug.
+- **Testcontainers killed mid-CI-run between test classes (fixed)** -
+  `AbstractIntegrationTest` originally used `@Testcontainers` +
+  `@Container` on `static` Postgres/Redis fields shared by multiple test
+  classes. That's a documented Testcontainers anti-pattern: `@Testcontainers`
+  ties a field's start/stop to *that specific test class's* JUnit
+  lifecycle, so when the first test class (`FirstFoodApplicationTests`)
+  finished, its `afterAll` stopped the (shared, static) containers right
+  as `AuthenticationFlowIntegrationTest` was about to reuse them -
+  producing "connection refused" mid-suite in CI, which looked like
+  flakiness but was 100% reproducible. Fixed by switching to the
+  documented "singleton containers pattern": a static initializer
+  (`Startables.deepStart(...).join()`), no `@Testcontainers`/`@Container`
+  annotations, containers never explicitly stopped (Testcontainers'
+  Ryuk sidecar cleans them up when the JVM exits). If a third test class
+  gets added later extending `AbstractIntegrationTest`, do NOT re-add
+  `@Testcontainers` to "simplify" it - that's exactly this bug again.
+- **IDE noise fixed, not bugs**: added `spring-boot-configuration-processor`
+  (optional, compile-time only) so `app.otp.*`/`app.jwt.*` stop showing as
+  "unknown property" in editors - it generates metadata from
+  `OtpProperties`/`JwtProperties` automatically. Also quoted the
+  `"com.firstfood"` logger key in all `application-*.yml` files (a
+  dotted key in a YAML map is technically fine but IDEs/linters flag it
+  as ambiguous) - purely cosmetic, never a functional issue.
 
 Modular monolith module boundaries (Spring Boot internal packages, not
 services): `identity`, `provider`, `provider-access` (RBAC),
