@@ -18,7 +18,7 @@ source.
 First real pilot: **one mess, ~40–50 customers**, currently run on
 WhatsApp group + notebook. Pilot plan is **DAY-based, 30 days, ₹2,500**.
 
-Product vision: *"Provide Food whenever you need it."*
+Product vision: *"Food whenever you need it."*
 
 ---
 
@@ -191,10 +191,15 @@ menu-locking assumptions, AI features without validated demand.
 - **IDE noise fixed, not bugs**: added `spring-boot-configuration-processor`
   (optional, compile-time only) so `app.otp.*`/`app.jwt.*` stop showing as
   "unknown property" in editors - it generates metadata from
-  `OtpProperties`/`JwtProperties` automatically. Also quoted the
-  `"com.firstfood"` logger key in all `application-*.yml` files (a
-  dotted key in a YAML map is technically fine but IDEs/linters flag it
-  as ambiguous) - purely cosmetic, never a functional issue.
+  `OtpProperties`/`JwtProperties` automatically. Also quoted the dotted
+  logger key using Spring's own bracket-escape convention -
+  `"[com.firstfood]"`, not just plain quotes - in all `application-*.yml`
+  files (cosmetic, never a functional issue).
+- **CI action versions (Sept 2026)**: `actions/checkout` bumped to `v7`,
+  `actions/setup-java` to `v6`, `actions/setup-node` to `v5` - all now
+  run on Node 24 (GitHub deprecated the Node 20 action runtime). If this
+  warning resurfaces later, check for a newer major again rather than
+  assuming v7/v6/v5 are still current - these actions get bumped often.
 
 Modular monolith module boundaries (Spring Boot internal packages, not
 services): `identity`, `provider`, `provider-access` (RBAC),
