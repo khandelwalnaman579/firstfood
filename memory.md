@@ -1,0 +1,468 @@
+# FirstFood V2 — Project Memory
+
+Living reference for anyone (human or Claude) picking this project up in a
+new session. Do not re-litigate the decisions below without a deliberate
+review — they were frozen after an explicit documentation reconciliation
+pass. Update this file whenever a phase completes or a frozen decision
+changes.
+
+---
+
+## 1. What FirstFood Is
+
+Two-sided platform for India's recurring/local food-service ecosystem
+(messes, tiffin services, PG/hostel food providers). V2 is a **greenfield
+rebuild** — the old implementation is reference-only, not a migration
+source.
+
+First real pilot: **one mess, ~40–50 customers**, currently run on
+WhatsApp group + notebook. Pilot plan is **DAY-based, 30 days, ₹2,500**.
+
+Product vision: *"Food whenever you need it."*
+
+---
+
+## 2. Canonical Domain Vocabulary
+
+| Concept | Canonical name |
+|---|---|
+| Food business | `FoodProvider` (never "Restaurant") |
+| Login identity | `UserAccount` |
+| Food recipient | `Person` |
+| Provider role relationship | `ProviderRoleAssignment` / DB: `PROVIDER_ROLE_ASSIGNMENT` |
+| Provider/customer relationship | `ProviderMembership` |
+| Commercial offering | `Plan` |
+| Central entitlement aggregate | `Subscription` |
+| Historical terms | `SubscriptionTermSnapshot` (commercial **and** policy terms — see §3) |
+| Absence | `AbsenceRecord` |
+| Attendance | `AttendanceRecord` |
+| Extension | `ExtensionEvent` |
+| Feedback | `Review` → `ReviewReply` |
+
+Relationship spine:
+`UserAccount → Person → ProviderMembership → Subscription → Plan → FoodProvider`
+
+---
+
+## 3. Frozen Decisions (from Documentation Reconciliation, do not reopen casually)
+
+1. **No separate policy-snapshot entity.** `SubscriptionTermSnapshot` is
+   the *only* snapshot table/entity, and it carries both commercial terms
+   (price, currency, consumption_type, purchased_days/meals) **and**
+   applicable policy terms (extension_allowed, absence cutoff, min
+   consecutive absence, max extension window, max expiry rule,
+   policy_version) captured at subscription creation.
+2. **Cardinality:** `SUBSCRIPTION 1 : 1 SUBSCRIPTION_TERM_SNAPSHOT` — every
+   subscription has exactly one immutable snapshot.
+3. **Provider role naming:** `ProviderRoleAssignment` / `PROVIDER_ROLE_ASSIGNMENT`
+   (not `PROVIDER_ROLE`).
+4. **Plan edits never rewrite existing subscriptions.** They affect only
+   new subscriptions/renewals. Renewal = new commercial event = new
+   snapshot.
+5. **Extension formula:**
+   `Final Expiry = min(Calculated Expiry + Eligible Extension, Maximum Allowed Expiry Date)`.
+   Extension processing must be idempotent and recorded as an auditable
+   `ExtensionEvent`.
+6. **Attendance/absence are structured records, not a TEXT/JSON blob.**
+   Attendance model is **opt-out**: active subscription defaults to
+   present; customer acts only when declaring absence.
+7. **Historical data is never casually deleted.** Providers/customers go
+   inactive, not deleted. `ProviderMembership` survives subscription
+   expiry.
+8. **PostgreSQL (Neon) is the sole source of truth.** Redis (Upstash) is
+   cache/rate-limit/ephemeral only — never authoritative business history.
+9. **Architecture: modular monolith**, not microservices, for MVP.
+10. **Backend authorization is authoritative** — frontend route
+    protection is not a security boundary. Provider-scoped access must be
+    enforced server-side.
+
+### Still open (must be resolved before DB migrations, not before)
+
+- **MEAL attendance granularity** — lunch+dinner on the same day = 2
+  meals, but current attendance shape (`subscription_id`,
+  `attendance_date`, `status`) can't represent that. Options on the
+  table: explicit `meal_type` enum, generalized provider-defined
+  `meal_slot`, or a dedicated `MealConsumption` event model. **Decide
+  intentionally — do not let the first migration accidentally decide
+  this.**
+- **Review reply cardinality** — one review → one reply (`0..1`) or many
+  (`0..N`)? Not yet confirmed.
+- **SubscriptionPolicy version ownership/uniqueness** — not yet finalized.
+- Persisted vs. derived subscription fields (remaining_days,
+  remaining_meals, effective_expiry_date) — decide storage strategy
+  during schema design.
+- Exact enums, indexes, FK actions, unique constraints, timezone/date-vs-
+  timestamp conventions — deferred to schema design (see `architecture.md`
+  §13 and ERD "Items to finalize").
+
+### Explicitly not going back into V2
+
+Restaurant-centric terminology, ordering as an MVP dependency, payment
+gateway dependency in MVP, generic `usage_history TEXT`/`days_eaten`
+fields, old MySQL/Razorpay assumptions, live-headcount-as-core-concept,
+menu-locking assumptions, AI features without validated demand.
+
+---
+
+## 4. Tech Stack (locked)
+
+| Layer | Choice | Pinned version (Sept 2026) |
+|---|---|---|
+| Frontend | Next.js + React + TypeScript, deployed on Vercel | Next.js 16.3.x (Active LTS), React 19.3.x |
+| Backend | Spring Boot + Java + Spring Security + JWT, deployed on AWS (Docker) | Spring Boot 4.1.1, Java 25 |
+| Primary DB | Neon PostgreSQL | Postgres 17 locally/on Neon (18 still preview-flagged on Neon) |
+| Cache/ephemeral | Upstash Redis in production; Valkey 8 locally | — |
+| Object storage/CDN | Cloudflare R2 | — |
+| Email/SMS (OTP) | Brevo / Brevo SMS | — |
+| Containerization | Docker | — |
+| Backend base package | `com.firstfood` | — |
+
+### Version audit (done Sept 10, 2026 - re-verify before Phase 2)
+
+- **Java 25** — current LTS (GA Sept 16, 2025, ≥8 years Oracle Premier
+  support). Java 21 remains LTS but 25 is the fresher window for a
+  greenfield project.
+- **Spring Boot 4.1.0** — Spring Boot has no official LTS track (every
+  minor gets ~12 months OSS support), but 3.5 reached OSS EOL June 30,
+  2026. Only the 4.0/4.1 lines are currently supported; 4.1.0 is latest
+  stable (GA ~June 2026). Supports Java 17 through Java 26.
+- **Node.js 24** — current Active LTS (Active LTS since Oct 2025,
+  Maintenance from Oct 2026). Node 20 (originally scaffolded) reached EOL
+  April 30, 2026 — do not use it. Node 22 is Maintenance LTS if 24 turns
+  out to be too new for some dependency.
+- **Next.js 16.3.x** — Active LTS per Next.js's own LTS policy (16.x
+  Active LTS since Oct 21, 2025; 15.x is Maintenance LTS). Requires React
+  19. `next lint` was removed in v16 — linting now runs via a flat
+  `eslint.config.mjs` and a plain `eslint` script.
+- **PostgreSQL 17** (not 18) — 18 is current upstream but Neon still runs
+  it with `io_method=sync` during its preview period; 17 is the newest
+  fully-GA choice on Neon. Revisit once Neon lifts the PG18 preview flag.
+- **TypeScript 6.0.3, deliberately not 7.0.x** — TypeScript 7 (native Go
+  compiler, GA July 2026) is the newest stable release, but it ships
+  without a stable programmatic API, so `typescript-eslint` /
+  `eslint-config-next` can't run on it yet. 6.0.3 is the last
+  JS-compiler-based release and is what the lint toolchain needs. Revisit
+  this pin once typescript-eslint supports TS7.
+- **Redis/Valkey** — architecture.md's frozen choice is Upstash Redis in
+  production; unchanged. Locally, `infra/docker-compose.yml` uses
+  `valkey/valkey:8-alpine` instead of the official `redis` image only to
+  sidestep Redis Ltd.'s SSPL/RSALv2 relicensing (March 2024) for local
+  tooling. This is a local-only substitution, not a production stack
+  change - flag it if that ever needs to be reconsidered.
+- **Spring Boot 4 test breaking change (fixed)** — Spring Boot 4
+  modularized `spring-boot-starter-test`; `TestRestTemplate` moved from
+  `org.springframework.boot.test.web.client` to
+  `org.springframework.boot.resttestclient`, and `@SpringBootTest` no
+  longer auto-configures it. Rather than chase the old class with an
+  extra annotation, `FirstFoodApplicationTests` was migrated to
+  `RestTestClient` (Spring's own recommended replacement -
+  `TestRestTemplate` is headed toward deprecation). Needs the
+  `spring-boot-resttestclient` and `spring-boot-restclient` test-scoped
+  dependencies in `pom.xml` (not pulled in by `spring-boot-starter-test`
+  alone anymore) plus `@AutoConfigureRestTestClient` on the test class.
+  If a future module needs `TestRestTemplate` specifically for some
+  reason, the same two dependencies plus `@AutoConfigureTestRestTemplate`
+  are what's needed instead.
+- **Two more Spring Boot 4/Security 7 API surprises (fixed, Phase 2)** -
+  (1) `UsernamePasswordAuthenticationFilter` lives in
+  `org.springframework.security.web.authentication`, not
+  `org.springframework.security.authentication` - easy typo, breaks
+  `addFilterBefore(...)` with a confusing cascade of unrelated-looking
+  errors in the same file. (2) `RestTestClient`'s request-body method is
+  `.body(Object)`, not WebTestClient's `.bodyValue(Object)` - they look
+  like the same fluent API family but aren't quite. If either of these
+  reappears in a new module, it's the same two mistakes, not a new bug.
+- **Testcontainers killed mid-CI-run between test classes (fixed)** -
+  `AbstractIntegrationTest` originally used `@Testcontainers` +
+  `@Container` on `static` Postgres/Redis fields shared by multiple test
+  classes. That's a documented Testcontainers anti-pattern: `@Testcontainers`
+  ties a field's start/stop to *that specific test class's* JUnit
+  lifecycle, so when the first test class (`FirstFoodApplicationTests`)
+  finished, its `afterAll` stopped the (shared, static) containers right
+  as `AuthenticationFlowIntegrationTest` was about to reuse them -
+  producing "connection refused" mid-suite in CI, which looked like
+  flakiness but was 100% reproducible. Fixed by switching to the
+  documented "singleton containers pattern": a static initializer
+  (`Startables.deepStart(...).join()`), no `@Testcontainers`/`@Container`
+  annotations, containers never explicitly stopped (Testcontainers'
+  Ryuk sidecar cleans them up when the JVM exits). If a third test class
+  gets added later extending `AbstractIntegrationTest`, do NOT re-add
+  `@Testcontainers` to "simplify" it - that's exactly this bug again.
+- **IDE noise fixed, not bugs**: added `spring-boot-configuration-processor`
+  (optional, compile-time only) so `app.otp.*`/`app.jwt.*` stop showing as
+  "unknown property" in editors - it generates metadata from
+  `OtpProperties`/`JwtProperties` automatically. Also quoted the dotted
+  logger key using Spring's own bracket-escape convention -
+  `"[com.firstfood]"`, not just plain quotes - in all `application-*.yml`
+  files (cosmetic, never a functional issue).
+- **CI action versions (Sept 2026)**: `actions/checkout` bumped to `v7`,
+  `actions/setup-java` to `v6`, `actions/setup-node` to `v5` - all now
+  run on Node 24 (GitHub deprecated the Node 20 action runtime). If this
+  warning resurfaces later, check for a newer major again rather than
+  assuming v7/v6/v5 are still current - these actions get bumped often.
+
+Modular monolith module boundaries (Spring Boot internal packages, not
+services): `identity`, `provider`, `provider-access` (RBAC),
+`membership`, `plan`, `subscription`, `attendance`, `review`,
+`notification`.
+
+---
+
+## 5. MVP Scope Guardrails
+
+**In:** mobile OTP auth, UserAccount/Person split (even if 1:1 in MVP),
+FoodProvider CRUD + isolation, ProviderRoleAssignment (OWNER-focused),
+ProviderMembership, Plan (DAY + MEAL types even if MEAL tracking is
+deferred operationally), DAY subscription lifecycle, provider-specific
+absence/extension policy, attendance default + absence declaration,
+extension calculation, auto expiry, historical snapshots, basic
+dashboards.
+
+**Out (future, don't build early):** payments/payment gateway, food
+ordering, WhatsApp API integration, MANAGER/WORKER operational modules,
+multi-member accounts UI, GPS/radius discovery, hyperlocal ads,
+analytics/automation, AI features, generic rules engine.
+
+---
+
+## 6. Source-of-Truth Documents
+
+- `prd.md` — product requirements (business rules, scope, personas)
+- `architecture.md` — system architecture, modules, data flow
+- `rules.md` — enumerated business/engineering rules
+- `phases.md` — phased delivery plan (this file tracks progress against it)
+- `design.md` — detailed domain/aggregate design notes
+- `FirstFood_V2_ERD_Final.pdf`, `FirstFood_V2_ERD_Spec.pdf`,
+  `FirstFood_V2_Domain_Model.pdf` — entity/relationship reference
+- `FirstFood_V2_Documentation_Reconciliation.md` — frozen-decision record
+  (§3 above is a condensed version of this)
+
+A **documentation reconciliation pass** was completed to align
+`prd.md`/`architecture.md`/`phases.md`/`design.md` with the frozen
+decisions in §3 (removing the stray "Policy Snapshot" as a separate
+entity wherever it appeared as a conceptual diagram node).
+
+---
+
+## 7. Phase Progress
+
+Per `phases.md`:
+
+- [x] **Phase 0 — Product & Architecture Freeze**: PRD, domain model,
+      ERD, architecture.md, rules.md, phases.md exist; the four
+      documentation conflicts above have been identified and frozen.
+- [~] **Phase 1 — Project Foundation**: scaffold built, then hardened
+      against an external Phase 1 review (`FirstFood_V2_Phase1_Review.md`,
+      Sept 10 2026). Fixed: explicit Spring Security config (public
+      `/api/v1/version` + `/actuator/health/**`, everything else denied
+      pending Phase 2 auth), a real Redis integration test (Testcontainers
+      Valkey + read/write, not just config), JWT secret now fails startup
+      if unset outside local/test profiles, `npm ci` in Docker/CI (needs
+      the committed `package-lock.json`), `.dockerignore` for both apps,
+      frontend error boundary no longer renders raw `error.message`.
+      Postgres 17 was already consistent between Testcontainers/Compose/
+      prod. Maven Wrapper has since been added and documented; the
+      Next.js API URL strategy is documented but still an open decision - see below.
+- [x] **Phase 2 — Identity & Authentication**: implemented in
+      `com.firstfood.identity`. Mobile OTP login (auto-provisions
+      `UserAccount` on first successful login - no separate signup step),
+      OTP requests rate-limited via Redis (fixed window,
+      `app.otp.request-rate-limit-per-hour`), OTPs hashed with BCrypt and
+      never logged/stored in plaintext, JWT access tokens (short-lived,
+      `app.jwt.access-token-ttl-minutes`) + opaque revocable refresh
+      sessions (rotate-on-use, hashed with SHA-256 at rest - see
+      `RefreshTokenHasher` javadoc for why that's a deliberately different
+      hash strategy than OTPs), `GET/PATCH /api/v1/me`, and a full
+      OTP-gated phone-number-change flow (rules.md Rule 3.3). Explicit
+      Spring Security `AuthenticationEntryPoint` added so unauthenticated
+      requests return 401, not Spring Security's 403-by-default (a common
+      gotcha caused by `AnonymousAuthenticationFilter`). New Flyway
+      migration `V2__identity_schema.sql`. `AuthenticationFlowIntegrationTest`
+      exercises the full phases.md exit-criteria flow (request → verify →
+      authenticate → protected API → refresh → logout) plus rejection
+      cases, using a `TestCapturingOtpSender` so tests can read the code
+      that would otherwise go out over SMS. `BrevoSmsOtpSender` is written
+      against Brevo's published Transactional SMS API contract but has
+      **not** been exercised against a real account - verify with a real
+      API key before trusting it in production.
+- [x] **Phase 2 hardening pass** (post `FirstFood_V2_Phase2_Final_Review.md`,
+      13 Sept 2026 - see that review for full detail on each finding):
+      - **Suspended-account enforcement (was 🔴 MUST FIX)**: `JwtAuthenticationFilter`
+        now loads the account per request and requires `AccountStatus.ACTIVE`,
+        not just a valid/unexpired JWT signature. `AuthenticationServiceImpl.refresh()`
+        checks the same thing before issuing a new token pair - a suspended
+        account's refresh token still gets consumed/revoked in the attempt
+        (can't be replayed), it just never receives a working pair back.
+      - **CORS (was 🔴 blocking any real browser frontend)**: explicit
+        `CorsConfigurationSource` in `SecurityConfig`. Origins come from
+        `app.cors.allowed-origins` - defaults to `http://localhost:3000`
+        locally/test, **required with no default in production** (same
+        fail-fast pattern as `JWT_SECRET`) via `CORS_ALLOWED_ORIGINS`.
+      - **Refresh rotation concurrency (was 🟠 HIGH)**: added
+        `RefreshSessionRepository.findByRefreshTokenHashForUpdate` (`@Lock(PESSIMISTIC_WRITE)`,
+        i.e. `SELECT ... FOR UPDATE`); `rotate()`/`revoke()` now use it
+        instead of the plain lookup, closing the race where two concurrent
+        refresh calls on the same token could both see it as "still active"
+        before either commit.
+      - **Stale/missing account (medium)**: `MeController`/`AuthenticationServiceImpl`
+        no longer throw a raw `IllegalStateException` (→ 500) when a JWT
+        names an account that's vanished; new `AuthenticatedAccountNotFoundException`
+        maps it to 401 instead.
+      - **Maven Wrapper actually restored**: earlier "generate it yourself"
+        guidance is moot now - `mvnw`/`mvnw.cmd`/`.mvn/wrapper/` are for
+        real this time, fetched from Apache's own GitHub repo (this
+        sandbox has GitHub access even without Maven Central access),
+        version placeholders substituted, `distributionUrl`/`wrapperUrl`
+        point at verified-current real releases (Maven 3.9.16, wrapper
+        3.3.4). CI now runs `./mvnw` instead of a bare `mvn`. **Executable
+        bit gotcha**: zip extraction and a fresh clone before the bit is
+        committed can both lose it - `chmod +x backend/mvnw`, and if
+        committing for the first time confirm it stuck
+        (`git update-index --chmod=+x backend/mvnw` if needed).
+      - **New tests**: suspended+JWT, suspended+refresh, OTP max-attempts
+        exhaustion (5 wrong guesses expires the challenge, even the
+        correct code fails after), OTP request rate limit, email update,
+        full phone-change flow, phone-already-in-use rejection - all
+        added to `AuthenticationFlowIntegrationTest`. OTP expiry and JWT
+        expiry needed their own `ExpiryIntegrationTest` class instead,
+        since they need near-zero TTL overrides (`app.otp.ttl-minutes=0`,
+        `app.jwt.access-token-ttl-minutes=0`) that would otherwise affect
+        every other test sharing that Spring context.
+      - **Frontend Phase 2 UI (was 🔴 entirely missing - just the Phase 1
+        placeholder)**: built the actual phone → OTP → authenticated-
+        screen flow (`app/page.tsx` + `components/auth/*`), covering
+        every endpoint (login, refresh, logout, email update, phone
+        change). Visual language is a "ledger/attendance register" -
+        grounded in the actual domain (paper attendance registers, see
+        prd.md) rather than a generic template. `lib/auth-api.ts` adds
+        typed wrappers per identity endpoint. **Tokens are kept in React
+        state only, never localStorage** - lost on page refresh by
+        design for Phase 2 (review #23's explicit recommendation); the
+        production hardening plan (move the refresh token to a Secure +
+        HttpOnly + SameSite cookie) is noted on-screen in the UI itself
+        and belongs on the Phase 3+ backlog, not deferred silently.
+      - **Real bug found while wiring the frontend up**: `apiFetch` only
+        treated HTTP 204 as "empty body" - but the OTP-request endpoints
+        return **202 Accepted with an empty body** too, and `.json()` on
+        an empty body throws. Fixed to check actual response content
+        instead of hardcoding one status code as the only "no body" case.
+      - **The build-time API URL risk (flagged above as "still open")
+        stopped being theoretical and broke `docker compose up --build`
+        (fixed)**: failed with "Missing required environment variable:
+        NEXT_PUBLIC_API_BASE_URL". Root cause: `infra/docker-compose.yml`'s
+        `environment:` entry for the frontend service only affects the
+        *running container* - `npm run build` happens during *image
+        build*, before the container exists, so the var was never
+        actually set when `lib/env.ts`'s fail-fast check ran. Fixed by
+        adding `ARG NEXT_PUBLIC_API_BASE_URL` to `frontend/Dockerfile`
+        (threaded through as `ENV` right before `RUN npm run build`) and
+        moving the value in `docker-compose.yml` from `environment:` to
+        `build.args:`. This makes local `docker compose up --build` work
+        again - it does NOT resolve the underlying design question
+        (README's three build-time-vs-runtime options are still
+        undecided for anything beyond local Docker Compose).
+      - **Backend couldn't reach Postgres/Redis when run via
+        `docker compose up --build` (fixed)**: "Connection to
+        localhost:5432 refused." `application-local.yml` hardcodes
+        `localhost` for both Postgres and Redis, which is correct when
+        the backend runs *natively* on the host (against ports Compose
+        exposes on the host's localhost) but wrong when the backend
+        itself runs *as a container* - inside a container, `localhost`
+        means that container, not a sibling `postgres`/`redis` container.
+        One `local` profile was being asked to mean two different network
+        topologies. Fixed by splitting it: `application-local.yml` stays
+        for native runs (`localhost`), new `application-docker.yml` is
+        for `docker compose up --build` (`postgres`/`redis` service
+        names). `docker-compose.yml`'s backend service now sets
+        `SPRING_PROFILES_ACTIVE: docker`, not `local`. See README "Two
+        'local' profiles" for the full explanation - if a third way of
+        running the backend locally gets added later, it needs its own
+        profile+hostname pairing too, not a reused one.
+      - **Immediate fallout from the profile split above (fixed)**:
+        splitting `local` into `local`/`docker` broke OTP delivery -
+        `DevConsoleOtpSender` was only wired for `@Profile("local")`, so
+        the new `docker` profile had zero `OtpSender` beans registered
+        at all (`BrevoSmsOtpSender` is `production`-only), and the app
+        failed to start entirely ("No qualifying bean of type OtpSender").
+        Should have caught this in the same pass as the profile split
+        instead of needing a second round-trip - anywhere a profile gets
+        added or renamed, grep for other `@Profile("...")` annotations
+        that assumed the old set was exhaustive. Fixed by wiring
+        `DevConsoleOtpSender` to `@Profile({"local", "docker"})` - both
+        are non-production dev scenarios that want the same console-based
+        OTP delivery; only the datasource/redis hostnames differ between
+        them.
+      - **Still not done**: real Brevo SMS verification (still just
+        written-against-the-docs, never called with a live account/key -
+        same caveat as before, unchanged), and the CORS local default
+        (`http://localhost:3000`) assumes the frontend stays on that port.
+- [ ] Phase 3 — FoodProvider Management
+- [ ] Phase 4 — Provider Roles & Access Control
+- [ ] Phase 5 — Person & Provider Membership
+- [ ] Phase 6 — Plans
+- [ ] Phase 7 — Subscription Core
+- [ ] Phase 8 — Attendance & Absence
+- [ ] Phase 9 — Extension Engine
+- [ ] Phase 10 — Subscription Lifecycle & Background Jobs
+- [ ] Phase 11 — Pilot Hardening
+- [ ] Phases 12+ — Reviews, Notifications, Production Stabilization, and
+      future (Discovery, Payments, Ordering, Advertising, Analytics,
+      Multi-Member) — not started, intentionally deferred.
+
+### Resolved after the Phase 1 review
+
+- **Maven Wrapper** — added via `mvn wrapper:wrapper` (self-generated
+  rather than hand-authored here - see the reasoning that used to live in
+  this section, now moot). `./mvnw` / `mvnw.cmd` are committed; README
+  "Running locally" uses them instead of a bare `mvn`. Still optional in
+  practice since the primary workflow is Docker (Maven runs inside the
+  build container either way), but it's there now for anyone running the
+  backend natively.
+
+### Still open
+
+- **Expired/consumed OTP row cleanup** — architecture.md #22 mentions
+  "Cleanup of expired OTPs" as a background job; Phase 2 doesn't add a
+  scheduler, so `otp_verification` rows accumulate indefinitely. Low risk
+  short-term (the table is small, nothing reads old rows), but add a
+  scheduled cleanup (or a Postgres partial index /TTL-style approach)
+  before this sees real production traffic.
+
+- **Next.js `NEXT_PUBLIC_*` build-time API URL** — now a live gap, not a
+  hypothetical one: the Phase 2 frontend UI actually calls the API via
+  `NEXT_PUBLIC_API_BASE_URL`, which gets baked into the browser bundle at
+  `npm run build` time. Changing it at container runtime (as
+  `infra/docker-compose.yml` currently does via an `environment:` entry)
+  does NOT change already-built client code. Works fine for local dev
+  (build and run happen together), but will silently serve a stale API
+  URL the moment a built image gets deployed somewhere else. Full write-
+  up and the three candidate strategies (build-time injection per
+  environment, a runtime config endpoint, or same-origin `/api` +
+  reverse proxy) live in README "Frontend API URL: build-time vs.
+  runtime" - decide there before this goes anywhere beyond local Docker
+  Compose, and update both README and this section with the outcome.
+  Same applies to the CORS default: `application.yml`'s
+  `app.cors.allowed-origins` assumes the frontend stays on
+  `http://localhost:3000` locally - fine today, but the two decisions
+  (API base URL strategy, CORS origin) should be made together since
+  same-origin routing would make the CORS config moot entirely.
+
+---
+
+## 8. Environment Notes
+
+- This sandbox's outbound network allowlist covers npm/PyPI/crates/GitHub
+  domains but **not Maven Central** (`repo.maven.apache.org`), so the
+  Spring Boot backend scaffold can be authored here but not
+  `mvn install`-verified in this environment. Verify the build locally or
+  in CI where Maven Central is reachable.
+- Frontend (`npm`) dependencies *can* be resolved in this sandbox.
+
+---
+
+## 9. Next Action
+
+Continue Phase 1 exit criteria: confirm backend starts, frontend starts,
+DB connection + migrations work, Redis connects, health checks respond,
+Docker build succeeds, CI can build/test — then move to Phase 2
+(Identity & Authentication).

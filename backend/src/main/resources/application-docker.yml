@@ -1,0 +1,34 @@
+# For when the BACKEND ITSELF runs inside docker-compose (i.e.
+# `docker compose up --build`, which builds and runs the backend as a
+# container alongside postgres/redis).
+#
+# This is deliberately separate from application-local.yml, which is for
+# running the backend NATIVELY on the host (mvn/./mvnw spring-boot:run,
+# or an IDE run configuration) against docker-compose's postgres/redis
+# containers exposed on the host's localhost.
+#
+# Inside a container, "localhost" means the container itself, not a
+# sibling container - reaching postgres/redis from inside the backend
+# container requires the Docker Compose SERVICE NAME as the hostname
+# instead. Mixing these two up is exactly what breaks with a confusing
+# "Connection to localhost:5432 refused" error that looks like Postgres
+# isn't running, when it actually is - just not reachable at that host.
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/firstfood
+    username: firstfood
+    password: firstfood
+  data:
+    redis:
+      host: redis
+      port: 6379
+
+app:
+  jwt:
+    # Same throwaway value as application-local.yml - see that file's
+    # comment for why this is safe to hardcode here.
+    secret: local-development-only-secret-do-not-use-in-production
+
+logging:
+  level:
+    "[com.firstfood]": DEBUG
