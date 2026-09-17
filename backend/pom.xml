@@ -68,10 +68,16 @@
       <scope>runtime</scope>
     </dependency>
 
-    <!-- Migrations -->
+    <!-- Migrations. Spring Boot 4 moved FlywayAutoConfiguration out of the
+         monolithic autoconfigure jar into its own spring-boot-flyway
+         module - flyway-core alone pulls in the Flyway library but NOT
+         the autoconfiguration glue that triggers migrations on startup,
+         so migrations silently never run (Hibernate then fails schema
+         validation against tables that were never created). Use the
+         starter, not flyway-core directly. -->
     <dependency>
-      <groupId>org.flywaydb</groupId>
-      <artifactId>flyway-core</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
     </dependency>
     <dependency>
       <groupId>org.flywaydb</groupId>

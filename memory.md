@@ -163,6 +163,38 @@ menu-locking assumptions, AI features without validated demand.
   If a future module needs `TestRestTemplate` specifically for some
   reason, the same two dependencies plus `@AutoConfigureTestRestTemplate`
   are what's needed instead.
+- **Spring Boot 4 modularized Flyway too - migrations silently never ran
+  (fixed, found via a real CI failure, "Schema validation: missing table
+  [otp_verification]")** — same underlying pattern as the TestRestTemplate
+  and UsernamePasswordAuthenticationFilter surprises below, but this one
+  is more dangerous because it fails *silently*: no error, no Flyway log
+  line at all, no mention of Flyway anywhere in the Conditions Evaluation
+  Report (not even as a "did not match" negative match) - the app just
+  boots, Hibernate's schema validation then fails because the tables
+  were never created. Root cause: `FlywayAutoConfiguration` moved out of
+  the monolithic `spring-boot-autoconfigure` jar into its own
+  `spring-boot-flyway` module in Spring Boot 4. `pom.xml` depended on
+  `org.flywaydb:flyway-core` directly, which pulls in the Flyway
+  *library* but not the Spring Boot *glue* that actually triggers
+  migrations on startup - so it wasn't "misconfigured", the
+  autoconfiguration class was never even on the classpath to be
+  evaluated. Fixed by replacing `flyway-core` with
+  `org.springframework.boot:spring-boot-starter-flyway` (kept
+  `flyway-database-postgresql` alongside it). If a schema-validation
+  failure ever recurs with zero Flyway log output preceding it, check
+  for exactly this: a raw `org.flywaydb:*` dependency instead of the
+  Spring Boot starter.
+- **General pattern across all of the above**: Spring Boot 4 broke up
+  the old monolithic `spring-boot-starter-test` and
+  `spring-boot-autoconfigure` jars into many small per-feature modules
+  (`spring-boot-resttestclient`, `spring-boot-flyway`, etc.). A dependency
+  that used to be "enough" in Spring Boot 3 (a raw `flyway-core`, relying
+  on `spring-boot-starter-test` alone for `TestRestTemplate`, etc.) can
+  now silently provide the library but not the Spring Boot integration.
+  When something that used to "just work" stops working after a
+  dependency/version bump with no obvious error, suspect a missing
+  Spring Boot 4 starter module before assuming the config itself is
+  wrong.
 - **Two more Spring Boot 4/Security 7 API surprises (fixed, Phase 2)** -
   (1) `UsernamePasswordAuthenticationFilter` lives in
   `org.springframework.security.web.authentication`, not
