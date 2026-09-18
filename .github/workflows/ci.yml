@@ -37,3 +37,9 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+        env:
+          # Same issue as the Docker build fix (see memory.md): this is a
+          # required env var (lib/env.ts fails fast if missing), and it
+          # gets baked in at build time. CI only needs the build to
+          # succeed, not a real backend URL - a placeholder is fine here.
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8080

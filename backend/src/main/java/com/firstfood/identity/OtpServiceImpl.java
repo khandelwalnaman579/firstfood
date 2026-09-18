@@ -28,18 +28,21 @@ public class OtpServiceImpl implements OtpService {
     private final PasswordEncoder passwordEncoder;
     private final StringRedisTemplate redisTemplate;
     private final OtpProperties otpProperties;
+    private final OtpOutcomeRecorder otpOutcomeRecorder;
 
     public OtpServiceImpl(
             OtpVerificationRepository otpVerificationRepository,
             OtpSender otpSender,
             PasswordEncoder passwordEncoder,
             StringRedisTemplate redisTemplate,
-            OtpProperties otpProperties) {
+            OtpProperties otpProperties,
+            OtpOutcomeRecorder otpOutcomeRecorder) {
         this.otpVerificationRepository = otpVerificationRepository;
         this.otpSender = otpSender;
         this.passwordEncoder = passwordEncoder;
         this.redisTemplate = redisTemplate;
         this.otpProperties = otpProperties;
+        this.otpOutcomeRecorder = otpOutcomeRecorder;
     }
 
     @Override
@@ -63,14 +66,16 @@ public class OtpServiceImpl implements OtpService {
                 .orElseThrow(OtpExpiredException::new);
 
         if (otp.isExpired(Instant.now())) {
-            otp.markExpired();
-            otpVerificationRepository.save(otp);
+            // Uses a separate REQUIRES_NEW bean, not otp.markExpired() +
+            // save() inline here - this method throws right after, and
+            // that would otherwise roll the update back too. See
+            // OtpOutcomeRecorder's javadoc for the full story.
+            otpOutcomeRecorder.markExpired(otp.getId());
             throw new OtpExpiredException();
         }
 
         if (!passwordEncoder.matches(code, otp.getOtpHash())) {
-            otp.recordFailedAttempt(otpProperties.maxAttempts());
-            otpVerificationRepository.save(otp);
+            otpOutcomeRecorder.recordFailedAttempt(otp.getId(), otpProperties.maxAttempts());
             throw new InvalidOtpException();
         }
 

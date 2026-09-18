@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -57,8 +58,18 @@ public class RefreshSessionService {
      * twice (FirstFood_V2_Phase2_Final_Review.md #11). With the lock, the
      * second concurrent request blocks until the first transaction
      * commits, then correctly sees the row already revoked.
+     * Runs in its own transaction (REQUIRES_NEW), deliberately: it's
+     * called from AuthenticationServiceImpl.refresh(), which may throw
+     * AccountSuspendedException *after* this returns. Without
+     * REQUIRES_NEW, Spring's default rollback-on-RuntimeException would
+     * undo the revoke/reissue done here too - meaning a suspended
+     * account's "already spent" refresh token would silently not
+     * actually be spent, and a retry with the same token would hit the
+     * same suspended check again instead of "invalid token". This
+     * exact bug was caught by suspendedAccountCannotRefresh failing in
+     * CI (second refresh attempt got 403 instead of 401).
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public RotationResult rotate(String rawToken) {
         RefreshSession session = refreshSessionRepository
                 .findByRefreshTokenHashForUpdate(refreshTokenHasher.hash(rawToken))

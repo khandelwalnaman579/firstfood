@@ -195,6 +195,45 @@ menu-locking assumptions, AI features without validated demand.
   dependency/version bump with no obvious error, suspect a missing
   Spring Boot 4 starter module before assuming the config itself is
   wrong.
+- **Two `@Transactional` rollback bugs, caught by real CI test failures
+  once the Flyway fix let the suite actually run (fixed)**:
+  1. `suspendedAccountCannotRefresh` - second refresh attempt got 403
+     instead of 401. `AuthenticationServiceImpl.refresh()` calls
+     `RefreshSessionService.rotate()` (revokes the old token, issues a
+     new one) and only *afterwards* checks if the account is suspended
+     and throws. Both live in the same `@Transactional` method, so
+     Spring's default rollback-on-`RuntimeException` undid the revoke
+     too - the "spent" token was never actually spent, so retrying with
+     it hit the same suspended check again instead of "invalid token".
+     Fixed by making `rotate()` `@Transactional(propagation =
+     REQUIRES_NEW)` so it commits independently of whatever the caller
+     does afterward.
+  2. `maxOtpAttemptsExhaustsTheChallengeEvenForTheRightCode` - 5 wrong
+     attempts didn't exhaust the OTP; the 6th (correct) attempt still
+     succeeded. Same root cause: `OtpServiceImpl.verifyOtp()` saved the
+     incremented `attemptCount` and then threw `InvalidOtpException`,
+     rolling back that very save every time - `attemptCount` never
+     actually persisted. Fixed the same way (REQUIRES_NEW), but since
+     this is *self-invocation* within `OtpServiceImpl` itself,
+     REQUIRES_NEW on a private method wouldn't have worked (Spring's
+     proxy-based AOP doesn't intercept `this.foo()` calls) - needed a
+     genuinely separate bean, `OtpOutcomeRecorder`, injected and called
+     from `OtpServiceImpl` instead.
+  General lesson for this codebase: any method that mutates+saves
+  something meant to survive, then throws an exception on the same code
+  path, needs to check whether that save is inside the same transaction
+  as the throw. If it must survive the throw, it needs REQUIRES_NEW -
+  and REQUIRES_NEW only works through a real bean-to-bean call, never
+  self-invocation.
+- **Frontend CI build failure (fixed) - same root cause as the earlier
+  Docker build fix, different spot**: `ci.yml`'s frontend job ran
+  `npm run build` with no `NEXT_PUBLIC_API_BASE_URL` set, so `lib/env.ts`
+  correctly failed fast. Fixed by setting a placeholder value
+  (`http://localhost:8080`) as an `env:` on that specific step - CI only
+  needs the build to succeed, not a real backend URL. If this keeps
+  recurring in new places (a future deploy pipeline, etc.), that's a
+  sign to actually resolve the underlying build-time-vs-runtime design
+  question in README instead of patching each new occurrence.
 - **Two more Spring Boot 4/Security 7 API surprises (fixed, Phase 2)** -
   (1) `UsernamePasswordAuthenticationFilter` lives in
   `org.springframework.security.web.authentication`, not
