@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [phase3-without-ReserveProxy]
+    branches: [phase4]
   pull_request:
 
 jobs:
