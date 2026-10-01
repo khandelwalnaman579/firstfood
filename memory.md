@@ -239,6 +239,11 @@ analytics/automation, AI features, generic rules engine.
 - `FirstFood_V2_Phase3_Execution_Plan.pdf` — Phase 3 build order, required
   tests, Definition of Done, and the decision to defer the reverse proxy
   (supersedes the freeze doc's reverse-proxy section)
+- `FirstFood_V2_Phase4_Checkpoint_Implementation_Plan.md` — Phase 4 checkpoint
+  order (0-7), exit gates and test lists
+- `FirstFood_V2_Phase4_Decision_Record.pdf` — **frozen Phase 4 decisions**
+  (roles, permission boundary, ownership transfer, 403/404 behaviour); change
+  only via an explicit, reviewed Phase 4 decision change
 - `FirstFood_V2_Documentation_Reconciliation.md` — frozen-decision record
   (§3 above is a condensed version of this)
 
@@ -362,7 +367,12 @@ Per `phases.md`:
       without Maven Central access, so it still needs its first
       `./mvnw clean verify` (new tests + all Phase 1/2 tests green) before
       this can be ticked. Details in §9.
-- [ ] Phase 4 — Provider Roles & Access Control
+- [~] **Phase 4 — Provider Roles & Access Control**: all checkpoints 0-7
+      implemented in one pass (V4/V5 migrations, permission model, central
+      `requirePermission`, role APIs, audit, `TeamRoles` UI, 3 new test
+      classes). NOT yet closed: the backend was written without Maven Central
+      or Docker, so it still needs its first `./mvnw clean verify` (new tests +
+      Phase 1-3 tests green) before this can be ticked. Details in §10.
 - [ ] Phase 5 — Person & Provider Membership
 - [ ] Phase 6 — Plans
 - [ ] Phase 7 — Subscription Core
@@ -442,13 +452,15 @@ setup stays until a real deployment reason appears).
   `provider_role_assignment`. CHECKs: status/type/role enums, capacity >= 1,
   intake only when ACTIVE, closure metadata iff CLOSED. Unique
   `(provider_id, account_id, role)` + partial unique index for exactly one
-  OWNER per provider. No cascades.
+  OWNER per provider (both reworked in V4, see §10). No cascades.
 - Modules: `provideraccess` (IDs only, no dependency on the provider entity)
   owns role assignments + `ProviderAccessService`; `provider` owns FoodProvider
   and calls provideraccess. Direction is provider -> provideraccess only.
-- Authorization: no sufficient role and nonexistent provider both return the
-  same 404 `PROVIDER_NOT_FOUND`. All four endpoints currently require OWNER.
-  Phase 4 replaces the simple role ordering with a permission matrix.
+- Authorization (Phase 3 as built): no sufficient role and nonexistent provider
+  both returned the same 404 `PROVIDER_NOT_FOUND`; all four endpoints required
+  OWNER. **Superseded by Phase 4 (§10):** the rank-based `assertProviderRole` /
+  `ProviderRole.satisfies` are gone, replaced by a permission matrix; members
+  lacking a permission now get 403 (non-members still 404).
 - PATCH quirks: null = unchanged, so `unlimitedCapacity: true` clears the
   limit; moving to ACTIVE defaults intake to true unless
   `acceptingNewCustomers` is sent; any PATCH on a CLOSED provider is 409.
@@ -456,7 +468,7 @@ setup stays until a real deployment reason appears).
   provider lifecycle, [x] provider access control, [x] frontend provider flow
   (typecheck/lint/build pass), [x] docs, [ ] integration tests green, [ ] no
   Phase 1/2 regressions confirmed. The last two need a real Maven run.
-- Not done on purpose: role-management endpoints (Phase 4), subscription
+- Not done on purpose (Phase 3): role-management endpoints (done in Phase 4), subscription
   capacity enforcement (later), reopening a CLOSED provider, reverse proxy.
 - Added generic 400 handlers in `GlobalExceptionHandler` for malformed JSON /
   bad enum values and non-UUID path variables (previously would have been 500).
@@ -468,23 +480,141 @@ setup stays until a real deployment reason appears).
 
 ---
 
-## 10. Next Action
+## 10. Phase 4 - Provider Roles & Access Control (implemented, pending first `mvnw clean verify`)
 
-Run `./mvnw clean verify` locally/CI and fix anything the backend compile or
-`ProviderIntegrationTest` surfaces; then Phase 4 (Provider Roles & Access
-Control). Reverse proxy stays a later infrastructure step.
+Source of truth: `FirstFood_V2_Phase4_Decision_Record.pdf` (frozen) +
+`FirstFood_V2_Phase4_Checkpoint_Implementation_Plan.md`. Do not invent
+authorization behaviour that is not in the record.
+
+**Frozen decisions (as implemented)**
+- Roles: `OWNER`, `MANAGER`, `WORKER`. One effective (ACTIVE) role per account
+  per provider; exactly one ACTIVE OWNER per provider.
+- Ownership moves only through an explicit transfer; the old OWNER becomes
+  MANAGER in the same transaction. OWNER cannot self-revoke or be assigned via
+  the role endpoint.
+- Owners choose *who* holds a role; the permission set is fixed in code (owners
+  never define permissions at runtime).
+- Role assignment targets a **registered phone number** (lookup key only,
+  never an authorization credential). Unregistered phone -> rejected.
+- HTTP: 401 unauthenticated; 404 provider/resource missing **or caller is not a
+  member** (existence hidden); 403 member lacking the permission.
+- Actor always comes from the JWT; client-supplied actor/role is ignored.
+  Provider A's roles never grant anything on provider B.
+
+**Permission matrix** (`ProviderRole` is the only place it lives; asserted in
+full by `ProviderRoleMatrixTest`)
+
+| Permission | OWNER | MANAGER | WORKER |
+|---|:-:|:-:|:-:|
+| PROVIDER_VIEW | yes | yes | yes |
+| PROVIDER_EDIT (profile, capacity, non-close status) | yes | yes | no |
+| PROVIDER_CLOSE | yes | no | no |
+| ROLE_VIEW | yes | yes | no |
+| ROLE_ASSIGN / ROLE_REVOKE / OWNER_TRANSFER | yes | no | no |
+
+WORKER is read-only; the decision record lists WORKER's "View provider" as
+"Reserved / as later defined" - the implementation grants `PROVIDER_VIEW` only
+(one-line change in `ProviderRole` + matrix test if that should be removed).
+Operational permissions for MANAGER/WORKER are reserved for the phases that
+build meals/attendance/subscriptions/etc.
+
+**Database**
+- `V4__provider_role_lifecycle.sql`: `provider_role_assignment` gains `status`
+  (ACTIVE/REVOKED), `assigned_by`, `revoked_at`, `revoked_by` (+ CHECK tying
+  revocation fields to status). `unique(provider_id, account_id, role)` was
+  replaced by a partial unique index `(provider_id, account_id) WHERE
+  status='ACTIVE'`; the one-OWNER index now also requires `status='ACTIVE'` so
+  revoked history never blocks a new owner. Phase 3 rows backfilled
+  (`assigned_by = account_id`). `assigned_by` stays nullable on purpose (the
+  Phase 3 test helper inserts rows without it; the service always sets it).
+  Assignments are never deleted; a role change = revoke + new row.
+- `V5__provider_role_audit.sql`: append-only `provider_role_audit` (trigger
+  rejects UPDATE/DELETE). Actions: `ROLE_ASSIGNED`, `ROLE_REVOKED`,
+  `OWNER_TRANSFERRED` (for a transfer: `target_account_id` = new owner,
+  `old_role` = that account's previous role or NULL, `new_role` = OWNER). Ids
+  only - no phone numbers/tokens.
+
+**Backend code**
+- `provideraccess`: `ProviderPermission`, `ProviderRole` (matrix),
+  `ProviderAccessService.requirePermission(accountId, providerId, permission)`
+  (single authorization entry point; returns the caller's role),
+  `ProviderRoleService` (`assignRole`, `revokeRole`, `transferOwnership`,
+  `findRoles`, `hasRole`), `RoleAssignmentView`, `InsufficientPermissionException`
+  (403), `RoleManagementException` (factories for the 400/404/409 cases),
+  audit entity/repository, `web/ProviderRoleController` + `dto/*`.
+- `identity.AccountLookupService`: narrow read-only lookup used by other
+  modules (phone -> ACTIVE account id with normalization; id -> phone for team
+  listings). Other modules must not use `UserAccountRepository` directly.
+- `provider.ProviderServiceImpl` now uses permissions: view = PROVIDER_VIEW;
+  edit = PROVIDER_EDIT; setting `status: CLOSED` additionally needs
+  PROVIDER_CLOSE; list filters by PROVIDER_VIEW. `ProviderResponse` gained
+  `myPermissions`.
+- Endpoints (`/api/v1/providers/{id}`): `GET /roles`, `POST /roles {phone, role}`
+  (201), `DELETE /roles/{assignmentId}` (returns the revoked view),
+  `POST /ownership/transfer {phone}` (returns [new owner, former owner]).
+- Error codes added: `INSUFFICIENT_PERMISSION`, `ROLE_INVALID`,
+  `OWNER_ASSIGNMENT_NOT_ALLOWED`, `TARGET_ACCOUNT_NOT_FOUND` (same for unknown,
+  malformed and suspended numbers), `ROLE_ALREADY_ASSIGNED`,
+  `ROLE_ASSIGNMENT_NOT_FOUND`, `ROLE_ALREADY_REVOKED`,
+  `OWNER_REVOCATION_NOT_ALLOWED`, `OWNERSHIP_TRANSFER_TO_SELF`; closed
+  providers reuse `PROVIDER_CLOSED` (409).
+
+**Gotchas worth remembering**
+- **Transfer order matters.** The partial unique indexes are checked per
+  statement and cannot be deferred, and Hibernate runs INSERTs before UPDATEs
+  at flush. `transferOwnership` therefore flushes each step explicitly: revoke
+  old OWNER -> revoke target's prior role -> insert new OWNER -> insert old
+  owner as MANAGER. "Zero owners" exists only inside the uncommitted transaction.
+- **Concurrency.** Every role mutation first runs `select status from
+  food_provider where id=? for update` (native query in
+  `ProviderRoleAssignmentRepository`, so `provideraccess` stays free of the
+  provider entity). The lock serializes mutations; after waiting, READ
+  COMMITTED re-reads fresh state (e.g. the loser of two concurrent transfers
+  sees itself as MANAGER -> 403). The partial indexes remain the last defence.
+- Role mutations and transfers on CLOSED providers -> 409 `PROVIDER_CLOSED`;
+  listing the team is still allowed.
+- Revocation takes effect immediately because JWTs carry identity only; roles
+  are read from the database on every request.
+- `JwtAuthenticationFilter` + SUSPENDED accounts holding a role was not
+  re-verified for Phase 4 (Phase 2 hardening covers suspended accounts at the
+  filter); worth one explicit test.
+
+**Frontend**: `lib/role-api.ts` (one typed function per endpoint),
+`components/provider/TeamRoles.tsx` (team list with phones, add member,
+remove, transfer with confirmation), wired into `ProviderDetail`; edit/close
+sections are shown from `provider.myPermissions` (a usability hint only - the
+backend re-checks everything). After a transfer the provider list is reloaded
+so the caller's new role/permissions show.
+
+**Tests**: `ProviderRoleMatrixTest` (unit, every role x permission),
+`ProviderRoleServiceIntegrationTest` (15, service-level lifecycle),
+`ProviderRoleApiIntegrationTest` (HTTP: 401 incl. expired JWT, end-to-end flow,
+WORKER read-only, validation, provider isolation, ignored client-supplied
+actor/role, transfer atomicity + audit, invalid transfers, final-owner/closed
+rules, 3 concurrency cases). Phase 4 tests use phones `+91987652xxxx` and
+`+91987653xxxx` (shared singleton DB - do not reuse; Phase 3 uses
+`...650xxxx`/`...651xxxx`).
+
+**Checkpoint status vs. the plan**: 0 decision freeze done; 1-7 implemented in
+a single pass (the plan recommends one commit per checkpoint - not done, the
+upload had no git repository). Not covered: expiry of access tokens mid-flow in
+the UI beyond the existing "refresh your session" message; pending-invite flow
+for unregistered phones (rejected by decision, not built).
+
+**Verification status:** frontend `tsc`/`eslint`/`next build` pass (run in this
+sandbox). Backend was authored without Maven Central or Docker: a plain
+`javac` pass over all sources showed no syntax errors and no unresolved symbols
+in project code, but nothing was compiled against real dependencies and **no
+test has been run**. Definition of Done still open: [ ] `./mvnw clean verify`
+green (new tests + Phase 1-3 regressions).
+
 ---
 
-## Phase 4 — Provider Roles & Access Control (implemented, pending `mvnw clean verify`)
+## 11. Next Action
 
-Frozen per `FirstFood_V2_Phase4_Decision_Record.pdf`. Summary of what the code does:
-
-- **One ACTIVE role per (provider, account); exactly one ACTIVE OWNER** — enforced by partial unique indexes (V4). Assignments are never deleted: `status` ACTIVE/REVOKED + `assigned_by/revoked_at/revoked_by`.
-- **Permissions**: `ProviderPermission` + the single role→permission map in `ProviderRole`. Authorization only via `ProviderAccessService.requirePermission(accountId, providerId, permission)`; non-member/missing provider → 404, member lacking permission → 403. `ProviderRole` is no longer ordered (no `satisfies`).
-- **Matrix**: OWNER = all; MANAGER = PROVIDER_VIEW, PROVIDER_EDIT, ROLE_VIEW; WORKER = PROVIDER_VIEW (read-only; operational permissions reserved). Closing a provider needs PROVIDER_CLOSE (OWNER only).
-- **APIs** (`/api/v1/providers/{id}`): `GET /roles`, `POST /roles {phone, role}`, `DELETE /roles/{assignmentId}`, `POST /ownership/transfer {phone}`. Target identified by registered phone (normalized, ACTIVE accounts only); actor is always the JWT.
-- **Transfer**: one transaction, provider row locked first; old OWNER revoked → target's prior role superseded → new OWNER inserted → old owner re-added as MANAGER (each step flushed because the partial unique indexes are not deferrable).
-- **Concurrency**: every role mutation takes `select … for update` on the `food_provider` row.
-- **Audit** (V5): append-only `provider_role_audit` (trigger blocks UPDATE/DELETE); ROLE_ASSIGNED / ROLE_REVOKED / OWNER_TRANSFERRED, ids only.
-- **CLOSED providers** reject role mutations and transfers (listing still allowed).
-- **Frontend**: `TeamRoles` component + `lib/role-api.ts`; edit/close/team controls are shown from `myPermissions` (usability only).
+Run `./mvnw clean verify` locally/CI and fix anything the backend compile or
+the new/old integration tests surface (Phase 3 `ProviderIntegrationTest` must
+pass unchanged - priority check for regressions from the permission refactor);
+commit/split the Phase 4 work; then tick Phase 3 and Phase 4 in §7 and start
+Phase 5 (Person & Provider Membership, `phases.md` §8). Reverse proxy stays a
+later infrastructure step.

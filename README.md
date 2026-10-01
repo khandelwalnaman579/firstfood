@@ -90,11 +90,12 @@ any real browser frontend), and restored a working Maven Wrapper (an
 earlier attempt was deferred, then claimed-but-not-actually-added - it's
 genuinely there now). Full detail in `memory.md` §7.
 
-## Status: Phase 3 — FoodProvider Management (implemented; backend awaiting first CI run)
+## Status: Phase 3 — FoodProvider Management (implemented)
 
 Implemented: `backend/.../provider` (FoodProvider + lifecycle) and
 `backend/.../provideraccess` (ProviderRoleAssignment + the reusable
-`ProviderAccessService.assertProviderRole(accountId, providerId, role)`),
+`ProviderAccessService`; since Phase 4 its single entry point is
+`requirePermission(accountId, providerId, permission)`),
 schema in `V3__provider_schema.sql`, and the provider pages in the frontend
 ("My providers" tab).
 
@@ -111,8 +112,8 @@ status/`accepting_new_customers`/closure combinations also blocked by CHECK
 constraints); `CLOSED` is terminal and read-only; providers are never
 physically deleted; `max_active_subscriptions` is stored/validated only
 (`NULL` = no limit; `unlimitedCapacity: true` in a PATCH clears it) - the
-future subscription service owns the actual capacity check. No role
-management endpoints exist: MANAGER/WORKER assignment is Phase 4.
+future subscription service owns the actual capacity check. Role
+management (MANAGER/WORKER, ownership transfer) arrived in Phase 4, below.
 
 Frontend: `frontend/lib/provider-api.ts` (one typed function per endpoint) and
 `frontend/components/provider/*` (list, create form, detail/edit/close). The
@@ -130,6 +131,86 @@ The browser still calls the backend via `NEXT_PUBLIC_API_BASE_URL` + the
 CORS allowlist from Phase 2. All HTTP goes through `frontend/lib/api-client.ts`,
 so adding a same-origin `/api/v1` proxy later is a config change. Add it when
 there is a concrete HTTPS/deployment/routing reason.
+
+## Status: Phase 4 — Provider Roles & Access Control (implemented; awaiting first `mvnw clean verify`)
+
+Decisions are frozen in `FirstFood_V2_Phase4_Decision_Record.pdf`; the
+summary and implementation notes are in `memory.md`. The backend of this phase
+was written without a Maven/Docker environment, so the first
+`cd backend && ./mvnw clean verify` is the real gate - run it before treating
+Phase 4 as done. (Frontend `tsc`, `eslint` and `next build` pass.)
+
+**Roles and the permission matrix.** Roles are `OWNER`, `MANAGER`, `WORKER`.
+An account has at most one ACTIVE role per provider, and every provider has
+exactly one ACTIVE OWNER (partial unique indexes in `V4`). Permissions are a
+fixed, application-defined set (`ProviderPermission`); owners choose *who* gets
+a role, never what a role can do. The single role-to-permission map lives in
+`ProviderRole`:
+
+| Capability (permission) | OWNER | MANAGER | WORKER |
+|---|:-:|:-:|:-:|
+| View provider (`PROVIDER_VIEW`) | yes | yes | yes |
+| Edit profile / capacity / non-close status (`PROVIDER_EDIT`) | yes | yes | no |
+| Close provider (`PROVIDER_CLOSE`) | yes | no | no |
+| View team (`ROLE_VIEW`) | yes | yes | no |
+| Assign roles (`ROLE_ASSIGN`) | yes | no | no |
+| Revoke roles (`ROLE_REVOKE`) | yes | no | no |
+| Transfer ownership (`OWNER_TRANSFER`) | yes | no | no |
+
+WORKER is read-only for now; detailed operational permissions for MANAGER and
+WORKER arrive with the domains that need them (meals, attendance, ...).
+
+| Endpoint | Who | Purpose |
+|---|---|---|
+| `GET /api/v1/providers/{id}/roles` | OWNER, MANAGER | Active team members (with phone numbers) |
+| `POST /api/v1/providers/{id}/roles` | OWNER | `{ "phone", "role": "MANAGER"\|"WORKER" }` - assign by the target's registered phone |
+| `DELETE /api/v1/providers/{id}/roles/{assignmentId}` | OWNER | Revoke a MANAGER/WORKER assignment (kept as history) |
+| `POST /api/v1/providers/{id}/ownership/transfer` | OWNER | `{ "phone" }` - new owner; you become MANAGER, atomically |
+
+`GET /api/v1/providers` and `GET /api/v1/providers/{id}` now also return
+`myPermissions` (the caller's permissions, resolved server-side). The
+frontend uses it only to hide controls; the backend re-checks every request.
+
+**Authorization and error behaviour.** Everything goes through
+`ProviderAccessService.requirePermission(accountId, providerId, permission)`;
+the acting account always comes from the JWT, never from a request body.
+Not a member (or provider doesn't exist) -> **404**; member without the
+permission -> **403**; missing/invalid/expired token -> **401**. A role on
+provider A never grants anything on provider B.
+
+**Rules worth knowing.**
+- Target accounts are looked up by phone (whitespace/hyphens ignored). Unknown,
+  malformed and suspended numbers all get the same `TARGET_ACCOUNT_NOT_FOUND`.
+- `OWNER` cannot be assigned through the role endpoint, and the OWNER row cannot
+  be revoked - ownership only moves through a transfer.
+- Transfer is one transaction: the old OWNER is revoked, any prior role of the
+  target is superseded, the target becomes OWNER and the old owner becomes
+  MANAGER. There is never a committed state with zero or two owners.
+- Role changes and transfers are rejected on `CLOSED` providers (the team can
+  still be listed).
+- Every mutation first locks the provider row (`select ... for update`), so
+  concurrent role changes on one provider are serialized.
+- Assignments are never deleted: `status` is `ACTIVE` or `REVOKED` with
+  `revoked_at`/`revoked_by`. Changing someone's role = revoke + new assignment.
+- Audit (`V5`): append-only `provider_role_audit` (a trigger rejects UPDATE and
+  DELETE) records `ROLE_ASSIGNED`, `ROLE_REVOKED` and `OWNER_TRANSFERRED` with
+  account ids only - no phone numbers or tokens.
+
+**Frontend.** `frontend/lib/role-api.ts` (one typed function per endpoint) and
+`frontend/components/provider/TeamRoles.tsx` (team list, add member, remove,
+transfer ownership with a confirmation step), shown under each provider's
+detail page. Edit/close controls on that page are now shown according to
+`myPermissions`.
+
+**Tests** (`cd backend && ./mvnw clean verify`):
+- `ProviderRoleMatrixTest` - the full role x permission matrix (unit test).
+- `ProviderRoleServiceIntegrationTest` - role lifecycle at the service level.
+- `ProviderRoleApiIntegrationTest` - HTTP level: 401s (including an expired
+  token), end-to-end assign/authorize/revoke, provider isolation, ignored
+  client-supplied actor/role fields, transfer rules, closed providers, audit
+  rows, and three concurrency cases (two transfers, duplicate assignments,
+  transfer vs. revoke).
+- `ProviderIntegrationTest` (Phase 3) must keep passing unchanged.
 
 ## Running locally
 
@@ -248,5 +329,4 @@ config change, not a rewrite of the provider pages.
 
 ## Next phase
 
-Phase 4 — Provider Roles & Access Control (MANAGER/WORKER assignment,
-fine-grained permissions). See `phases.md` §7.
+Phase 5 — Person & Provider Membership. See `phases.md` §8.
