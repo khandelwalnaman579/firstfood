@@ -499,8 +499,11 @@ class ProviderIntegrationTest extends AbstractIntegrationTest {
     }
 
     private void insertAssignment(UUID providerId, UUID accountId, String role) {
+        // assigned_by is NOT NULL since V6. Supplying it keeps the constraint tests below failing for
+        // the reason they assert (second OWNER / duplicate / bad role), not for a missing column.
         jdbc.update(
-                "insert into provider_role_assignment (id, provider_id, account_id, role) values (?, ?, ?, ?)",
-                UUID.randomUUID(), providerId, accountId, role);
+                "insert into provider_role_assignment (id, provider_id, account_id, role, assigned_by) "
+                        + "values (?, ?, ?, ?, ?)",
+                UUID.randomUUID(), providerId, accountId, role, accountId);
     }
 }

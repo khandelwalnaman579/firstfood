@@ -372,7 +372,9 @@ Per `phases.md`:
       `requirePermission`, role APIs, audit, `TeamRoles` UI, 3 new test
       classes). NOT yet closed: the backend was written without Maven Central
       or Docker, so it still needs its first `./mvnw clean verify` (new tests +
-      Phase 1-3 tests green) before this can be ticked. Details in §10.
+      Phase 1-3 tests green) before this can be ticked. Closure pass done (V6:
+      `assigned_by` NOT NULL, final transfer-audit semantics, MANAGER operations
+      test); only the green CI run remains. Details in §10.
 - [ ] Phase 5 — Person & Provider Membership
 - [ ] Phase 6 — Plans
 - [ ] Phase 7 — Subscription Core
@@ -525,14 +527,23 @@ build meals/attendance/subscriptions/etc.
   replaced by a partial unique index `(provider_id, account_id) WHERE
   status='ACTIVE'`; the one-OWNER index now also requires `status='ACTIVE'` so
   revoked history never blocks a new owner. Phase 3 rows backfilled
-  (`assigned_by = account_id`). `assigned_by` stays nullable on purpose (the
-  Phase 3 test helper inserts rows without it; the service always sets it).
-  Assignments are never deleted; a role change = revoke + new row.
+  (`assigned_by = account_id`). `assigned_by` was left nullable in V4 only for
+  the Phase 3 test helper; **closed in V6:** it is now NOT NULL (V6 backfills
+  any NULL with `account_id` first), the Phase 3 helper supplies it, and the
+  entity constructor rejects null. Assignments are never deleted; a role
+  change = revoke + new row.
 - `V5__provider_role_audit.sql`: append-only `provider_role_audit` (trigger
   rejects UPDATE/DELETE). Actions: `ROLE_ASSIGNED`, `ROLE_REVOKED`,
-  `OWNER_TRANSFERRED` (for a transfer: `target_account_id` = new owner,
-  `old_role` = that account's previous role or NULL, `new_role` = OWNER). Ids
-  only - no phone numbers/tokens.
+  `OWNER_TRANSFERRED`. Ids only - no phone numbers/tokens.
+  **Audit semantics (final; documented as table comments in V6): one row = one
+  account's role change** - `target_account_id` went from `old_role` to
+  `new_role`, performed by `actor_account_id`. A transfer changes two accounts,
+  so it writes TWO `OWNER_TRANSFERRED` rows in one transaction: (target = new
+  owner, old = its previous role or NULL, new = OWNER) and (target = former
+  owner, old = OWNER, new = MANAGER). `created_at` can tie inside one
+  transaction - look rows up by target, never by ordering.
+- `V6__role_assignment_assigned_by_required_and_audit_semantics.sql`: the two
+  closure changes. V4/V5 were deliberately not edited (Flyway checksums).
 
 **Backend code**
 - `provideraccess`: `ProviderPermission`, `ProviderRole` (matrix),
@@ -587,13 +598,29 @@ backend re-checks everything). After a transfer the provider list is reloaded
 so the caller's new role/permissions show.
 
 **Tests**: `ProviderRoleMatrixTest` (unit, every role x permission),
-`ProviderRoleServiceIntegrationTest` (15, service-level lifecycle),
+`ProviderRoleServiceIntegrationTest` (16, service-level lifecycle incl. the
+`assigned_by` NOT NULL constraint),
 `ProviderRoleApiIntegrationTest` (HTTP: 401 incl. expired JWT, end-to-end flow,
-WORKER read-only, validation, provider isolation, ignored client-supplied
-actor/role, transfer atomicity + audit, invalid transfers, final-owner/closed
+WORKER read-only, **MANAGER operations** - may edit profile, capacity,
+non-close status and intake, and view roles; may NOT close (also when bundled
+with an allowed edit), assign, revoke or transfer, and nothing denied takes
+effect -, validation, provider isolation, ignored client-supplied actor/role,
+transfer atomicity + two-row audit, invalid transfers, final-owner/closed
 rules, 3 concurrency cases). Phase 4 tests use phones `+91987652xxxx` and
 `+91987653xxxx` (shared singleton DB - do not reuse; Phase 3 uses
 `...650xxxx`/`...651xxxx`).
+
+**CI**: `.github/workflows/ci.yml` previously ran pushes only for the Phase 3
+branch (plus all PRs); it now runs on pushes to every branch, so the Phase 4
+branch gets `./mvnw -B clean verify` plus frontend typecheck/lint/build.
+
+**Phase 4 closure checklist**
+- [x] `assigned_by` NOT NULL (V6, entity, Phase 3 helper, DB test)
+- [x] Transfer audit semantics clarified and tested (two rows, V6 comments)
+- [x] MANAGER operation test added
+- [ ] Clean CI run: `./mvnw -B clean verify` green, including the unchanged
+      Phase 3 `ProviderIntegrationTest`. Needs a real Maven/Docker environment
+      (not available where this was written). Phase 4 is CLOSED when it passes.
 
 **Checkpoint status vs. the plan**: 0 decision freeze done; 1-7 implemented in
 a single pass (the plan recommends one commit per checkpoint - not done, the
@@ -603,7 +630,7 @@ for unregistered phones (rejected by decision, not built).
 
 **Verification status:** frontend `tsc`/`eslint`/`next build` pass (run in this
 sandbox). Backend was authored without Maven Central or Docker: a plain
-`javac` pass over all sources showed no syntax errors and no unresolved symbols
+`javac` pass over all sources (re-run after the closure pass) showed no syntax errors and no unresolved symbols
 in project code, but nothing was compiled against real dependencies and **no
 test has been run**. Definition of Done still open: [ ] `./mvnw clean verify`
 green (new tests + Phase 1-3 regressions).
@@ -615,6 +642,6 @@ green (new tests + Phase 1-3 regressions).
 Run `./mvnw clean verify` locally/CI and fix anything the backend compile or
 the new/old integration tests surface (Phase 3 `ProviderIntegrationTest` must
 pass unchanged - priority check for regressions from the permission refactor);
-commit/split the Phase 4 work; then tick Phase 3 and Phase 4 in §7 and start
+commit/split the Phase 4 work (V6 closure pass included); then tick Phase 3 and Phase 4 in §7 and start
 Phase 5 (Person & Provider Membership, `phases.md` §8). Reverse proxy stays a
 later infrastructure step.

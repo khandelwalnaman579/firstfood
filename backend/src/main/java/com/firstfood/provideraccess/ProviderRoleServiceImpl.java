@@ -138,8 +138,12 @@ public class ProviderRoleServiceImpl implements ProviderRoleService {
         ProviderRoleAssignment formerOwner = repository.saveAndFlush(
                 new ProviderRoleAssignment(providerId, actorAccountId, ProviderRole.MANAGER, actorAccountId));
 
+        // Audit semantics: one row = one account's role change (target went old_role -> new_role,
+        // done by actor). A transfer changes two accounts' roles, so it writes two rows.
         audit(RoleAuditAction.OWNER_TRANSFERRED, providerId, actorAccountId, targetAccountId,
                 targetOldRole, ProviderRole.OWNER);
+        audit(RoleAuditAction.OWNER_TRANSFERRED, providerId, actorAccountId, actorAccountId,
+                ProviderRole.OWNER, ProviderRole.MANAGER);
         return toViews(List.of(newOwner, formerOwner));
     }
 

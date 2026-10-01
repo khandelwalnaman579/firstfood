@@ -266,14 +266,87 @@ class ProviderRoleApiIntegrationTest extends AbstractIntegrationTest {
         send("PATCH", "/api/v1/providers/" + provider, bob.accessToken(), Map.of("name", "Bob's Now"))
                 .expectStatus().isOk();
 
-        // Audit: one OWNER_TRANSFERRED row; old_role = target's previous role.
-        Map<String, Object> audit = jdbc.queryForMap(
-                "select actor_account_id, target_account_id, old_role, new_role from provider_role_audit "
-                        + "where provider_id = ? and action = 'OWNER_TRANSFERRED'", provider);
-        assertThat(audit.get("actor_account_id")).isEqualTo(alice.id());
-        assertThat(audit.get("target_account_id")).isEqualTo(bob.id());
-        assertThat(audit.get("old_role")).isEqualTo("WORKER");
-        assertThat(audit.get("new_role")).isEqualTo("OWNER");
+        // Audit: one row = one account's role change, so a transfer writes two rows
+        // (created_at can tie inside one transaction, so rows are looked up by target, not order).
+        assertThat(jdbc.queryForObject("select count(*) from provider_role_audit where provider_id = ? "
+                + "and action = 'OWNER_TRANSFERRED'", Integer.class, provider)).isEqualTo(2);
+        Map<String, Object> newOwnerRow = jdbc.queryForMap(
+                "select actor_account_id, old_role, new_role from provider_role_audit "
+                        + "where provider_id = ? and action = 'OWNER_TRANSFERRED' and target_account_id = ?",
+                provider, bob.id());
+        assertThat(newOwnerRow.get("actor_account_id")).isEqualTo(alice.id());
+        assertThat(newOwnerRow.get("old_role")).isEqualTo("WORKER");   // Bob's superseded role
+        assertThat(newOwnerRow.get("new_role")).isEqualTo("OWNER");
+        Map<String, Object> formerOwnerRow = jdbc.queryForMap(
+                "select actor_account_id, old_role, new_role from provider_role_audit "
+                        + "where provider_id = ? and action = 'OWNER_TRANSFERRED' and target_account_id = ?",
+                provider, alice.id());
+        assertThat(formerOwnerRow.get("actor_account_id")).isEqualTo(alice.id());
+        assertThat(formerOwnerRow.get("old_role")).isEqualTo("OWNER");
+        assertThat(formerOwnerRow.get("new_role")).isEqualTo("MANAGER");
+    }
+
+    @Test
+    void managerCanOperateTheProviderButNotCloseOrAdministerRoles() {
+        Account owner = login("+919876530030");
+        Account manager = login("+919876530031");
+        login("+919876530032");
+        UUID provider = createProvider(owner);
+        RoleAssignmentView managerRow = assign(owner, provider, "+919876530031", "MANAGER");
+        String url = "/api/v1/providers/" + provider;
+        String token = manager.accessToken();
+
+        // Allowed: edit profile fields.
+        ProviderResponse edited = send("PATCH", url, token, Map.of(
+                "name", "Manager Edited Mess", "description", "Edited by a manager",
+                "locality", "Arera Colony", "contactPhone", "+919800000001"))
+                .expectStatus().isOk().expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(edited.name()).isEqualTo("Manager Edited Mess");
+        assertThat(edited.locality()).isEqualTo("Arera Colony");
+
+        // Allowed: edit capacity (set, then clear).
+        ProviderResponse capped = send("PATCH", url, token, Map.of("maxActiveSubscriptions", 40))
+                .expectStatus().isOk().expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(capped.maxActiveSubscriptions()).isEqualTo(40);
+        ProviderResponse uncapped = send("PATCH", url, token, Map.of("unlimitedCapacity", true))
+                .expectStatus().isOk().expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(uncapped.maxActiveSubscriptions()).isNull();
+
+        // Allowed: non-close status changes and the intake toggle.
+        ProviderResponse paused = send("PATCH", url, token, Map.of("status", "TEMPORARILY_UNAVAILABLE"))
+                .expectStatus().isOk().expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(paused.status().name()).isEqualTo("TEMPORARILY_UNAVAILABLE");
+        ProviderResponse reactivated = send("PATCH", url, token, Map.of("status", "ACTIVE"))
+                .expectStatus().isOk().expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(reactivated.status().name()).isEqualTo("ACTIVE");
+        ProviderResponse notAccepting = send("PATCH", url, token, Map.of("acceptingNewCustomers", false))
+                .expectStatus().isOk().expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(notAccepting.acceptingNewCustomers()).isFalse();
+
+        // Allowed: view the provider and the team.
+        send("GET", url, token, null).expectStatus().isOk();
+        assertThat(listRoles(manager, provider)).hasSize(2);
+
+        // Denied: closing (even bundled with an otherwise allowed edit), role administration, transfer.
+        assertError(send("PATCH", url, token, Map.of("status", "CLOSED", "closureReason", "no")),
+                HttpStatus.FORBIDDEN, "INSUFFICIENT_PERMISSION");
+        assertError(send("PATCH", url, token, Map.of("name", "Sneaky", "status", "CLOSED")),
+                HttpStatus.FORBIDDEN, "INSUFFICIENT_PERMISSION");
+        assertError(send("POST", url + "/roles", token, Map.of("phone", "+919876530032", "role", "WORKER")),
+                HttpStatus.FORBIDDEN, "INSUFFICIENT_PERMISSION");
+        assertError(send("DELETE", url + "/roles/" + managerRow.id(), token, null),
+                HttpStatus.FORBIDDEN, "INSUFFICIENT_PERMISSION");
+        assertError(send("POST", url + "/ownership/transfer", token, Map.of("phone", "+919876530032")),
+                HttpStatus.FORBIDDEN, "INSUFFICIENT_PERMISSION");
+
+        // Nothing denied took effect: provider still open, still one owner, manager still a manager.
+        ProviderResponse after = getProvider(owner, provider).expectStatus().isOk()
+                .expectBody(ProviderResponse.class).returnResult().getResponseBody();
+        assertThat(after.status().name()).isEqualTo("ACTIVE");
+        assertThat(after.name()).isEqualTo("Manager Edited Mess"); // the "Sneaky" rename was rejected
+        assertThat(roleOf(provider, owner.id())).isEqualTo("OWNER");
+        assertThat(roleOf(provider, manager.id())).isEqualTo("MANAGER");
+        assertThat(activeRoleCount(provider)).isEqualTo(2);
     }
 
     @Test

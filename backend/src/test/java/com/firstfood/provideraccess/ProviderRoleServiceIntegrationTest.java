@@ -315,6 +315,19 @@ class ProviderRoleServiceIntegrationTest extends AbstractIntegrationTest {
         assertThat(roleService.hasRole(provider, owner, ProviderRole.OWNER)).isFalse();
     }
 
+    @Test
+    void assignedByIsMandatoryInTheDatabase() {
+        UUID owner = account("+919876520038");
+        UUID target = account("+919876520039");
+        UUID provider = provider(owner);
+
+        assertThatThrownBy(() -> jdbc.update(
+                "insert into provider_role_assignment (id, provider_id, account_id, role) "
+                        + "values (?, ?, ?, 'MANAGER')", UUID.randomUUID(), provider, target))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(activeCount(provider)).isEqualTo(1);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private UUID account(String phone) {

@@ -191,10 +191,11 @@ provider A never grants anything on provider B.
 - Every mutation first locks the provider row (`select ... for update`), so
   concurrent role changes on one provider are serialized.
 - Assignments are never deleted: `status` is `ACTIVE` or `REVOKED` with
-  `revoked_at`/`revoked_by`. Changing someone's role = revoke + new assignment.
+  `revoked_at`/`revoked_by`; `assigned_by` is mandatory (V6). Changing someone's role = revoke + new assignment.
 - Audit (`V5`): append-only `provider_role_audit` (a trigger rejects UPDATE and
   DELETE) records `ROLE_ASSIGNED`, `ROLE_REVOKED` and `OWNER_TRANSFERRED` with
-  account ids only - no phone numbers or tokens.
+  account ids only - no phone numbers or tokens. One row = one account's role
+  change (`target` went `old_role` -> `new_role`), so a transfer writes two rows.
 
 **Frontend.** `frontend/lib/role-api.ts` (one typed function per endpoint) and
 `frontend/components/provider/TeamRoles.tsx` (team list, add member, remove,
@@ -206,7 +207,7 @@ detail page. Edit/close controls on that page are now shown according to
 - `ProviderRoleMatrixTest` - the full role x permission matrix (unit test).
 - `ProviderRoleServiceIntegrationTest` - role lifecycle at the service level.
 - `ProviderRoleApiIntegrationTest` - HTTP level: 401s (including an expired
-  token), end-to-end assign/authorize/revoke, provider isolation, ignored
+  token), end-to-end assign/authorize/revoke, MANAGER allowed/denied operations, provider isolation, ignored
   client-supplied actor/role fields, transfer rules, closed providers, audit
   rows, and three concurrency cases (two transfers, duplicate assignments,
   transfer vs. revoke).

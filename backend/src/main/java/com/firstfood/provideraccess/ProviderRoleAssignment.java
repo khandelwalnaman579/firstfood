@@ -7,6 +7,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
@@ -43,7 +44,7 @@ public class ProviderRoleAssignment {
     @Column(nullable = false, length = 20)
     private RoleAssignmentStatus status = RoleAssignmentStatus.ACTIVE;
 
-    @Column(name = "assigned_by", updatable = false)
+    @Column(name = "assigned_by", nullable = false, updatable = false)
     private UUID assignedBy;
 
     @Column(name = "revoked_at")
@@ -69,7 +70,7 @@ public class ProviderRoleAssignment {
         this.providerId = providerId;
         this.accountId = accountId;
         this.role = role;
-        this.assignedBy = assignedBy;
+        this.assignedBy = Objects.requireNonNull(assignedBy, "assignedBy");
     }
 
     /** Marks the assignment revoked. Callers must have validated authority and invariants. */
