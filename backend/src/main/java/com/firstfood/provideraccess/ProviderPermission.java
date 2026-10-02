@@ -1,0 +1,25 @@
+package com.firstfood.provideraccess;
+
+/**
+ * The fixed, application-defined provider permission set (Phase 4 decision
+ * record §4). Owners choose who gets which ROLE; they never define permissions
+ * at runtime. Operational permissions (customers, attendance, plans...) are
+ * added by the phases that introduce those domains.
+ */
+public enum ProviderPermission {
+    PROVIDER_VIEW,
+    PROVIDER_EDIT,
+    PROVIDER_CLOSE,
+    ROLE_VIEW,
+    ROLE_ASSIGN,
+    ROLE_REVOKE,
+    OWNER_TRANSFER,
+    /** Phase 5: see a provider's customers (memberships). */
+    MEMBERSHIP_VIEW,
+    /** Phase 5: add a customer to / remove a customer from a provider. */
+    MEMBERSHIP_MANAGE,
+    /** Phase 6: see a provider's plans (and their current policy). */
+    PLAN_VIEW,
+    /** Phase 6: create, edit, activate and deactivate a provider's plans (pricing + policy). */
+    PLAN_MANAGE
+}
