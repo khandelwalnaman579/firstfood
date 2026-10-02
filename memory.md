@@ -676,7 +676,7 @@ Dependency direction: `membership -> provider, provideraccess, identity` (no cyc
 4. **Permissions**: new `MEMBERSHIP_VIEW` (OWNER, MANAGER, WORKER) and
    `MEMBERSHIP_MANAGE` (OWNER, MANAGER). WORKER gets view because attendance
    (a later phase) needs the customer list; this follows PRD §9 but the PRD does
-   not spell the WORKER grant out - confirm. Matrix test updated deliberately.
+   not spell the WORKER grant out - frozen phase 5 decision. Matrix test updated deliberately.
 5. **Provider state**: adding requires provider not CLOSED and
    `accepting_new_customers = true` (409 `PROVIDER_CLOSED` /
    `PROVIDER_NOT_ACCEPTING_CUSTOMERS`). Deactivating is allowed while not accepting
