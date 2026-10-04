@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [phase5]
+    branches: [phase6]
   pull_request:
 
 jobs:
