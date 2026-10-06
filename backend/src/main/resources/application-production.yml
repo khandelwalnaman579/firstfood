@@ -1,0 +1,36 @@
+# All secrets/connection details come from environment variables - never
+# committed values (rules.md Rule 17.3 - never expose secrets).
+spring:
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  data:
+    redis:
+      url: ${REDIS_URL}
+
+management:
+  endpoint:
+    health:
+      show-details: never
+
+app:
+  notifications:
+    brevo:
+      api-key: ${BREVO_API_KEY}
+      sender-name: ${BREVO_SMS_SENDER_NAME:FirstFood}
+  cors:
+    # No default on purpose, same pattern as JWT_SECRET: production must
+    # fail startup rather than silently allow the local-dev origin (or
+    # worse, nothing) through CORS. Comma-separated if more than one.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+logging:
+  level:
+    "[com.firstfood]": INFO
+    root: WARN
