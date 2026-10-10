@@ -1,0 +1,77 @@
+spring:
+  application:
+    name: firstfood-v2
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: ${PORT:8080}
+  # Deliberately NOT setting forward-headers-strategy (reverse-proxy migration, R-08/R-10).
+  # Nothing here reads the client IP, and no endpoint emits redirects or absolute URLs built from
+  # the request, so forwarded headers buy nothing today. Turning "framework"/"native" on makes
+  # Spring TRUST X-Forwarded-* from whoever sends them - any caller, since the backend is publicly
+  # reachable - so only enable it together with locking ingress down to the proxy. Do that BEFORE
+  # adding any per-IP rate limit or IP logging.
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+app:
+  business:
+    # The calendar day that dates such as a subscription's start and expiry are read in (see
+    # BusinessCalendar). One zone for the whole India-only pilot; per-provider zones are a later,
+    # deliberate decision.
+    time-zone: Asia/Kolkata
+  jobs:
+    # Phase 10 background jobs (lifecycle package). Every instance schedules every job; the job_run lease makes sure
+    # only one actually runs it. Crons are Spring 6-field (sec min hour day month weekday) in the business time zone.
+    # Frequent on purpose: every job is idempotent, so a missed run is made up within the hour.
+    enabled: ${JOBS_ENABLED:true}
+    lease-duration: 5m
+    batch-size: 100
+    otp-retention: 24h
+    session-retention: 7d
+    expiry-cron: "0 5 * * * *"
+    extension-cron: "0 20 * * * *"
+    otp-cleanup-cron: "0 30 3 * * *"
+    session-cleanup-cron: "0 40 3 * * *"
+  jwt:
+    # No default on purpose (FirstFood_V2_Phase1_Review.md #9): missing
+    # JWT_SECRET must fail application startup, not silently fall back to
+    # a value anyone can read in this repo. Local/test profiles supply
+    # their own throwaway value below via application-local.yml /
+    # application-test.yml.
+    secret: ${JWT_SECRET}
+    access-token-ttl-minutes: 15
+    refresh-token-ttl-days: 30
+  otp:
+    ttl-minutes: 5
+    max-attempts: 5
+    request-rate-limit-per-hour: 5
+  cors:
+    # FirstFood_V2_Phase2_Final_Review.md #20. Comma-separated list via
+    # CORS_ALLOWED_ORIGINS; defaults to the local Next.js dev server so
+    # `docker compose up` works without extra config. Production
+    # overrides this with the real frontend origin (see
+    # application-production.yml) - never leave this default active
+    # outside local/test.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
